@@ -8,6 +8,12 @@
 
 NeuroScope visualizes the execution graph of neural networks in real-time. Attach it to your model, run a forward pass, and see the data flow in your browser.
 
+**v0.2.0 New Features:**
+- ⏱️ **Performance Profiling** - Execution time heatmaps per layer
+- ∇ **Backward Pass Visualization** - Track gradient flow and detect vanishing/exploding gradients
+- 📊 **Tensor Statistics** - Min/max/mean/std for output tensors
+- 💾 **Memory Tracking** - CUDA memory delta per operation
+
 ## Installation
 
 ```bash
@@ -55,6 +61,46 @@ output = model(x)
 # 5. Cleanup when done
 neuroscope.detach()
 ```
+
+### v0.2.0: Performance Profiling
+
+```python
+import neuroscope
+
+# Enable profiling features
+neuroscope.attach(
+    model,
+    enable_profiling=True,      # Track execution time per layer
+    track_memory=True,          # Track CUDA memory deltas
+    capture_tensor_stats=True,  # Capture min/max/mean of outputs
+)
+
+neuroscope.start_server()
+
+# Run inference - switch to Profiling view (press '2') to see heatmaps
+output = model(x)
+```
+
+### v0.2.0: Gradient Debugging
+
+```python
+import neuroscope
+
+# Enable gradient capture for backward pass visualization
+neuroscope.attach(
+    model,
+    capture_gradients=True,  # Track gradients during backward pass
+)
+
+neuroscope.start_server()
+
+# Forward & Backward - switch to Gradients view (press '3')
+output = model(x)
+loss = criterion(output, target)
+loss.backward()  # Gradient capture happens here!
+```
+
+See `examples/profiling_example.py` and `examples/gradient_debugging.py` for complete demos.
 
 ---
 
@@ -225,6 +271,9 @@ Clear the current execution graph.
 
 | Shortcut | Action |
 |----------|--------|
+| `1` | Normal view mode |
+| `2` | Profiling view mode (heatmaps) |
+| `3` | Gradients view mode |
 | `Ctrl+F` | Focus search |
 | `Ctrl+E` | Export as PNG |
 | `Escape` | Clear search |

@@ -89,6 +89,57 @@ class TensorMetadata:
 
 
 @dataclass
+class TensorStats:
+    """
+    Statistical summary of tensor values.
+
+    Captured when capture_values=True in tracer settings.
+
+    Attributes:
+        min_val: Minimum value in tensor
+        max_val: Maximum value in tensor  
+        mean_val: Mean value
+        std_val: Standard deviation
+        num_zeros: Count of zero values
+        num_nan: Count of NaN values
+        num_inf: Count of Inf values
+    """
+
+    min_val: float = 0.0
+    max_val: float = 0.0
+    mean_val: float = 0.0
+    std_val: float = 0.0
+    num_zeros: int = 0
+    num_nan: int = 0
+    num_inf: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to JSON-serializable dictionary."""
+        return {
+            "min_val": self.min_val,
+            "max_val": self.max_val,
+            "mean_val": self.mean_val,
+            "std_val": self.std_val,
+            "num_zeros": self.num_zeros,
+            "num_nan": self.num_nan,
+            "num_inf": self.num_inf,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TensorStats:
+        """Create from dictionary."""
+        return cls(
+            min_val=data.get("min_val", 0.0),
+            max_val=data.get("max_val", 0.0),
+            mean_val=data.get("mean_val", 0.0),
+            std_val=data.get("std_val", 0.0),
+            num_zeros=data.get("num_zeros", 0),
+            num_nan=data.get("num_nan", 0),
+            num_inf=data.get("num_inf", 0),
+        )
+
+
+@dataclass
 class GraphNode:
     """
     A node in the execution graph representing a module or operation.
@@ -103,9 +154,13 @@ class GraphNode:
         children_ids: IDs of child nodes (for containers)
         input_tensors: Metadata for input tensors
         output_tensors: Metadata for output tensors
+        gradient_tensors: Metadata for gradient tensors (backward pass)
         execution_order: Order in which this node executed (0-indexed)
+        execution_time_ms: Time taken for this layer's forward pass
+        memory_delta_bytes: Memory allocated/freed during this operation
         has_error: Whether an error was detected at this node
         error_message: Description of the error, if any
+        tensor_stats: Statistical summary of output tensors
         extra_info: Additional framework-specific metadata
     """
 
@@ -118,9 +173,13 @@ class GraphNode:
     children_ids: list[str] = field(default_factory=list)
     input_tensors: list[TensorMetadata] = field(default_factory=list)
     output_tensors: list[TensorMetadata] = field(default_factory=list)
+    gradient_tensors: list[TensorMetadata] = field(default_factory=list)
     execution_order: int = 0
+    execution_time_ms: float = 0.0
+    memory_delta_bytes: int = 0
     has_error: bool = False
     error_message: str | None = None
+    tensor_stats: TensorStats | None = None
     extra_info: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -135,15 +194,23 @@ class GraphNode:
             "children_ids": self.children_ids,
             "input_tensors": [t.to_dict() for t in self.input_tensors],
             "output_tensors": [t.to_dict() for t in self.output_tensors],
+            "gradient_tensors": [t.to_dict() for t in self.gradient_tensors],
             "execution_order": self.execution_order,
+            "execution_time_ms": self.execution_time_ms,
+            "memory_delta_bytes": self.memory_delta_bytes,
             "has_error": self.has_error,
             "error_message": self.error_message,
+            "tensor_stats": self.tensor_stats.to_dict() if self.tensor_stats else None,
             "extra_info": self.extra_info,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GraphNode:
         """Create from dictionary."""
+        tensor_stats = None
+        if data.get("tensor_stats"):
+            tensor_stats = TensorStats.from_dict(data["tensor_stats"])
+        
         return cls(
             id=data["id"],
             label=data["label"],
@@ -154,9 +221,13 @@ class GraphNode:
             children_ids=data.get("children_ids", []),
             input_tensors=[TensorMetadata.from_dict(t) for t in data.get("input_tensors", [])],
             output_tensors=[TensorMetadata.from_dict(t) for t in data.get("output_tensors", [])],
+            gradient_tensors=[TensorMetadata.from_dict(t) for t in data.get("gradient_tensors", [])],
             execution_order=data.get("execution_order", 0),
+            execution_time_ms=data.get("execution_time_ms", 0.0),
+            memory_delta_bytes=data.get("memory_delta_bytes", 0),
             has_error=data.get("has_error", False),
             error_message=data.get("error_message"),
+            tensor_stats=tensor_stats,
             extra_info=data.get("extra_info", {}),
         )
 

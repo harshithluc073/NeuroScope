@@ -5,6 +5,12 @@ This tracer attaches to PyTorch nn.Module instances and captures
 the execution graph during forward passes using register_forward_hook
 and register_forward_pre_hook.
 
+v0.2.0 Features:
+- Performance profiling with execution time per layer
+- Memory tracking (CUDA memory delta per operation)
+- Tensor statistics capture (min/max/mean/std)
+- Backward pass gradient capture
+
 IMPORTANT: All hooks are wrapped in try-catch to NEVER crash the training loop.
 """
 
@@ -21,6 +27,7 @@ from neuroscope.core.graph import (
     GraphNode,
     NodeType,
     TensorMetadata,
+    TensorStats,
 )
 from neuroscope.core.tracer import BaseTracer
 
@@ -38,21 +45,38 @@ class PyTorchTracer(BaseTracer):
     Automatically attaches hooks to all submodules of a model to
     capture tensor shapes, dtypes, and devices during forward passes.
 
+    v0.2.0 Features:
+    - enable_profiling: Track execution time per layer
+    - track_memory: Track CUDA memory delta per operation
+    - capture_tensor_stats: Capture min/max/mean of outputs
+    - capture_gradients: Track gradients during backward pass
+
     Example:
-        >>> tracer = PyTorchTracer()
+        >>> tracer = PyTorchTracer(enable_profiling=True)
         >>> tracer.attach(model)
-        >>> output = model(input)  # Graph is captured
+        >>> output = model(input)  # Graph is captured with timing
         >>> graph = tracer.get_graph()
         >>> tracer.detach()
     """
 
-    def __init__(self, suppress_errors: bool = True) -> None:
+    def __init__(
+        self,
+        suppress_errors: bool = True,
+        enable_profiling: bool = True,
+        track_memory: bool = True,
+        capture_tensor_stats: bool = False,
+        capture_gradients: bool = False,
+    ) -> None:
         """
         Initialize the PyTorch tracer.
         
         Args:
             suppress_errors: If True, hook errors are logged but don't crash training.
                            Set to False for debugging.
+            enable_profiling: Track execution time per layer (default: True)
+            track_memory: Track CUDA memory delta per operation (default: True)
+            capture_tensor_stats: Capture min/max/mean of outputs (default: False)
+            capture_gradients: Track gradients during backward pass (default: False)
         """
         super().__init__()
         self._hooks: list[Any] = []  # RemovableHandle objects
@@ -65,6 +89,19 @@ class PyTorchTracer(BaseTracer):
         self._tensor_sources: dict[int, str] = {}  # tensor id -> source node id
         self._suppress_errors = suppress_errors
         self._error_count = 0
+        
+        # v0.2.0 profiling options
+        self._enable_profiling = enable_profiling
+        self._track_memory = track_memory
+        self._capture_tensor_stats = capture_tensor_stats
+        self._capture_gradients = capture_gradients
+        
+        # Timing state - stores start time per module
+        self._module_start_times: dict[str, float] = {}
+        # Memory state - stores memory before forward pass
+        self._module_start_memory: dict[str, int] = {}
+        # Node ID lookup for gradient updates
+        self._name_to_node_id: dict[str, str] = {}
 
     def attach(self, model: Any) -> None:
         """
@@ -108,7 +145,7 @@ class PyTorchTracer(BaseTracer):
             self._name_to_depth[name if name else "root"] = depth
             self._name_to_parent[name if name else "root"] = parent_name
 
-            # Register hooks
+            # Register forward hooks
             pre_hook = module.register_forward_pre_hook(
                 self._create_pre_hook(name if name else "root", module)
             )
@@ -116,12 +153,26 @@ class PyTorchTracer(BaseTracer):
                 self._create_post_hook(name if name else "root", module)
             )
             self._hooks.extend([pre_hook, post_hook])
+            
+            # Register backward hook if gradient capture enabled
+            if self._capture_gradients:
+                try:
+                    backward_hook = module.register_full_backward_hook(
+                        self._create_backward_hook(name if name else "root", module)
+                    )
+                    self._hooks.append(backward_hook)
+                except Exception as e:
+                    logger.debug(f"Could not register backward hook for {name}: {e}")
 
         self._is_attached = True
         self._graph.metadata = {
             "framework": "pytorch",
             "model_class": type(model).__name__,
             "attached_at": time.time(),
+            "profiling_enabled": self._enable_profiling,
+            "memory_tracking": self._track_memory,
+            "tensor_stats": self._capture_tensor_stats,
+            "gradient_capture": self._capture_gradients,
         }
 
     def detach(self) -> None:
@@ -143,16 +194,48 @@ class PyTorchTracer(BaseTracer):
         self._execution_order = 0
         self._active_modules = []
         self._tensor_sources = {}
+        self._module_start_times = {}
+        self._module_start_memory = {}
+        self._name_to_node_id = {}
 
     def on_forward_start(self, module: Any, inputs: Any, name: str) -> None:
         """Record the start of a module's forward pass."""
+        import torch
+        
         self._active_modules.append(name)
+        
+        # Capture start time for profiling
+        if self._enable_profiling:
+            self._module_start_times[name] = time.perf_counter()
+        
+        # Capture memory before forward pass
+        if self._track_memory and torch.cuda.is_available():
+            try:
+                self._module_start_memory[name] = torch.cuda.memory_allocated()
+            except Exception:
+                pass
 
     def on_forward_end(
         self, module: Any, inputs: Any, outputs: Any, name: str
     ) -> None:
         """Record the end of a module's forward pass."""
         import torch
+
+        # Calculate execution time
+        execution_time_ms = 0.0
+        if self._enable_profiling and name in self._module_start_times:
+            execution_time_ms = (time.perf_counter() - self._module_start_times[name]) * 1000
+            del self._module_start_times[name]
+        
+        # Calculate memory delta
+        memory_delta_bytes = 0
+        if self._track_memory and torch.cuda.is_available() and name in self._module_start_memory:
+            try:
+                current_memory = torch.cuda.memory_allocated()
+                memory_delta_bytes = current_memory - self._module_start_memory[name]
+                del self._module_start_memory[name]
+            except Exception:
+                pass
 
         # Create node
         node_id = f"node_{name}_{self._execution_order}"
@@ -162,6 +245,11 @@ class PyTorchTracer(BaseTracer):
         # Extract tensor metadata
         input_tensors = self._extract_tensor_metadata(inputs)
         output_tensors = self._extract_tensor_metadata(outputs)
+        
+        # Capture tensor statistics if enabled
+        tensor_stats = None
+        if self._capture_tensor_stats:
+            tensor_stats = self._compute_tensor_stats(outputs)
 
         # Detect shape mismatches or errors
         has_error = False
@@ -172,7 +260,7 @@ class PyTorchTracer(BaseTracer):
             has_error = True
             error_message = "Output contains NaN or Inf values"
 
-        # Create node
+        # Create node with profiling data
         node = GraphNode(
             id=node_id,
             label=name if name else "root",
@@ -183,13 +271,19 @@ class PyTorchTracer(BaseTracer):
             input_tensors=input_tensors,
             output_tensors=output_tensors,
             execution_order=self._execution_order,
+            execution_time_ms=execution_time_ms,
+            memory_delta_bytes=memory_delta_bytes,
             has_error=has_error,
             error_message=error_message,
+            tensor_stats=tensor_stats,
             extra_info=self._get_module_info(module),
         )
 
         self._graph.add_node(node)
         self._execution_order += 1
+        
+        # Store node ID for gradient capture lookup
+        self._name_to_node_id[name] = node_id
 
         # Track tensor sources for edge creation
         self._update_tensor_sources(outputs, node_id)
@@ -356,3 +450,102 @@ class PyTorchTracer(BaseTracer):
                     process(t, i)
 
         process(inputs)
+
+    def _compute_tensor_stats(self, tensors: Any) -> TensorStats | None:
+        """Compute statistical summary of output tensors."""
+        import torch
+        
+        def get_stats(tensor: torch.Tensor) -> TensorStats | None:
+            try:
+                with torch.no_grad():
+                    flat = tensor.float().flatten()
+                    
+                    # Handle empty tensors
+                    if flat.numel() == 0:
+                        return None
+                    
+                    return TensorStats(
+                        min_val=float(flat.min().item()),
+                        max_val=float(flat.max().item()),
+                        mean_val=float(flat.mean().item()),
+                        std_val=float(flat.std().item()) if flat.numel() > 1 else 0.0,
+                        num_zeros=int((flat == 0).sum().item()),
+                        num_nan=int(torch.isnan(flat).sum().item()),
+                        num_inf=int(torch.isinf(flat).sum().item()),
+                    )
+            except Exception:
+                return None
+        
+        # Get stats from first tensor found
+        if isinstance(tensors, torch.Tensor):
+            return get_stats(tensors)
+        elif isinstance(tensors, (tuple, list)):
+            for t in tensors:
+                stats = self._compute_tensor_stats(t)
+                if stats:
+                    return stats
+        elif isinstance(tensors, dict):
+            for t in tensors.values():
+                stats = self._compute_tensor_stats(t)
+                if stats:
+                    return stats
+        
+        return None
+
+    def _create_backward_hook(self, name: str, module: Any) -> Callable:
+        """Create a backward hook to capture gradients."""
+        def hook(module: Any, grad_input: tuple, grad_output: tuple) -> None:
+            try:
+                # Find the node for this module
+                node_id = self._name_to_node_id.get(name)
+                if node_id and node_id in self._graph.nodes:
+                    node = self._graph.nodes[node_id]
+                    
+                    # Extract gradient metadata
+                    gradient_tensors = self._extract_tensor_metadata(grad_output)
+                    
+                    # Update node with gradient info
+                    node.gradient_tensors = gradient_tensors
+                    
+                    # Check for gradient issues
+                    if self._check_gradient_issues(grad_output):
+                        if not node.has_error:
+                            node.has_error = True
+                            node.error_message = "Gradient contains NaN, Inf, or vanishing values"
+                    
+                    # Broadcast gradient update
+                    self.broadcast("gradient_update", {
+                        "node_id": node_id,
+                        "gradient_tensors": [t.to_dict() for t in gradient_tensors],
+                    })
+            except Exception as e:
+                self._handle_hook_error("backward_hook", name, e)
+        
+        return hook
+
+    def _check_gradient_issues(self, gradients: Any) -> bool:
+        """Check for problematic gradients (NaN, Inf, vanishing)."""
+        import torch
+        
+        VANISHING_THRESHOLD = 1e-7
+        
+        if isinstance(gradients, torch.Tensor):
+            if gradients is None:
+                return True
+            try:
+                with torch.no_grad():
+                    if torch.isnan(gradients).any():
+                        return True
+                    if torch.isinf(gradients).any():
+                        return True
+                    # Check for vanishing gradients
+                    if gradients.abs().max().item() < VANISHING_THRESHOLD:
+                        return True
+            except Exception:
+                pass
+            return False
+        elif isinstance(gradients, (tuple, list)):
+            return any(self._check_gradient_issues(g) for g in gradients if g is not None)
+        
+        return False
+

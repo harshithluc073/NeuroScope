@@ -1,4 +1,4 @@
-import { useGraphStore, type TensorMetadata } from '../store/graphStore';
+import { useGraphStore, type TensorMetadata, type GraphNodeData, type TensorStats } from '../store/graphStore';
 
 function formatShape(shape: number[]): string {
     return `[${shape.join(', ')}]`;
@@ -10,6 +10,13 @@ function formatBytes(bytes: number): string {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatTime(ms: number): string {
+    if (ms === 0) return '0 ms';
+    if (ms < 1) return `${(ms * 1000).toFixed(0)} μs`;
+    if (ms < 1000) return `${ms.toFixed(3)} ms`;
+    return `${(ms / 1000).toFixed(3)} s`;
 }
 
 function TensorInfo({ tensor, label }: { tensor: TensorMetadata; label: string }) {
@@ -44,6 +51,40 @@ function TensorInfo({ tensor, label }: { tensor: TensorMetadata; label: string }
     );
 }
 
+// v0.2.0: Tensor Statistics component
+function TensorStatsInfo({ stats }: { stats: TensorStats }) {
+    return (
+        <div className="tensor-stats">
+            <div className="tensor-stats__row">
+                <span className="tensor-stats__key">Min</span>
+                <code className="tensor-stats__value">{stats.min_val.toExponential(3)}</code>
+            </div>
+            <div className="tensor-stats__row">
+                <span className="tensor-stats__key">Max</span>
+                <code className="tensor-stats__value">{stats.max_val.toExponential(3)}</code>
+            </div>
+            <div className="tensor-stats__row">
+                <span className="tensor-stats__key">Mean</span>
+                <code className="tensor-stats__value">{stats.mean_val.toExponential(3)}</code>
+            </div>
+            <div className="tensor-stats__row">
+                <span className="tensor-stats__key">Std</span>
+                <code className="tensor-stats__value">{stats.std_val.toExponential(3)}</code>
+            </div>
+            {(stats.num_nan > 0 || stats.num_inf > 0 || stats.num_zeros > 0) && (
+                <div className="tensor-stats__row tensor-stats__row--warning">
+                    <span className="tensor-stats__key">Issues</span>
+                    <code className="tensor-stats__value">
+                        {stats.num_nan > 0 && `${stats.num_nan} NaN `}
+                        {stats.num_inf > 0 && `${stats.num_inf} Inf `}
+                        {stats.num_zeros > 0 && `${stats.num_zeros} zeros`}
+                    </code>
+                </div>
+            )}
+        </div>
+    );
+}
+
 export function NodeInspector() {
     const { selectedNodeId, nodes, selectNode } = useGraphStore();
 
@@ -58,7 +99,7 @@ export function NodeInspector() {
         );
     }
 
-    const { data } = selectedNode;
+    const data = selectedNode.data as GraphNodeData;
 
     return (
         <aside className="node-inspector">
@@ -95,6 +136,31 @@ export function NodeInspector() {
                     </div>
                 </section>
 
+                {/* v0.2.0: Profiling Info */}
+                {(data.execution_time_ms > 0 || data.memory_delta_bytes !== 0) && (
+                    <section className="node-inspector__section node-inspector__section--profiling">
+                        <h4>⏱️ Profiling</h4>
+                        <div className="node-inspector__info">
+                            {data.execution_time_ms > 0 && (
+                                <div className="node-inspector__row">
+                                    <span className="node-inspector__key">Execution Time</span>
+                                    <code className="node-inspector__value node-inspector__value--time">
+                                        {formatTime(data.execution_time_ms)}
+                                    </code>
+                                </div>
+                            )}
+                            {data.memory_delta_bytes !== 0 && (
+                                <div className="node-inspector__row">
+                                    <span className="node-inspector__key">Memory Delta</span>
+                                    <code className={`node-inspector__value ${data.memory_delta_bytes > 0 ? 'positive' : 'negative'}`}>
+                                        {data.memory_delta_bytes > 0 ? '+' : ''}{formatBytes(Math.abs(data.memory_delta_bytes))}
+                                    </code>
+                                </div>
+                            )}
+                        </div>
+                    </section>
+                )}
+
                 {/* Error */}
                 {data.has_error && (
                     <section className="node-inspector__section node-inspector__section--error">
@@ -103,8 +169,16 @@ export function NodeInspector() {
                     </section>
                 )}
 
+                {/* v0.2.0: Tensor Statistics */}
+                {data.tensor_stats && (
+                    <section className="node-inspector__section">
+                        <h4>📊 Tensor Statistics</h4>
+                        <TensorStatsInfo stats={data.tensor_stats} />
+                    </section>
+                )}
+
                 {/* Input Tensors */}
-                {data.input_tensors.length > 0 && (
+                {data.input_tensors && data.input_tensors.length > 0 && (
                     <section className="node-inspector__section">
                         <h4>Input Tensors</h4>
                         {data.input_tensors.map((tensor, i) => (
@@ -114,7 +188,7 @@ export function NodeInspector() {
                 )}
 
                 {/* Output Tensors */}
-                {data.output_tensors.length > 0 && (
+                {data.output_tensors && data.output_tensors.length > 0 && (
                     <section className="node-inspector__section">
                         <h4>Output Tensors</h4>
                         {data.output_tensors.map((tensor, i) => (
@@ -123,8 +197,18 @@ export function NodeInspector() {
                     </section>
                 )}
 
+                {/* v0.2.0: Gradient Tensors */}
+                {data.gradient_tensors && data.gradient_tensors.length > 0 && (
+                    <section className="node-inspector__section node-inspector__section--gradients">
+                        <h4>∇ Gradient Tensors</h4>
+                        {data.gradient_tensors.map((tensor, i) => (
+                            <TensorInfo key={i} tensor={tensor} label={`Gradient ${i}`} />
+                        ))}
+                    </section>
+                )}
+
                 {/* Extra Info */}
-                {Object.keys(data.extra_info).length > 0 && (
+                {data.extra_info && Object.keys(data.extra_info).length > 0 && (
                     <section className="node-inspector__section">
                         <h4>Additional Info</h4>
                         <div className="node-inspector__info">

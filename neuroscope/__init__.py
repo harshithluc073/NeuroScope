@@ -5,7 +5,7 @@ Attach non-intrusive hooks to PyTorch, TensorFlow, or JAX models
 to visualize the exact execution graph during forward passes.
 """
 
-from neuroscope.core.graph import ExecutionGraph, GraphEdge, GraphNode, TensorMetadata
+from neuroscope.core.graph import ExecutionGraph, GraphEdge, GraphNode, TensorMetadata, TensorStats
 from neuroscope.core.server import NeuroScopeServer
 from neuroscope.core.tracer import BaseTracer
 
@@ -19,6 +19,7 @@ __all__ = [
     "GraphNode",
     "GraphEdge",
     "TensorMetadata",
+    "TensorStats",
 ]
 
 # Global state

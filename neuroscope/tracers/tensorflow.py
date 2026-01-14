@@ -4,6 +4,9 @@ TensorFlow-specific tracer.
 This tracer captures the computational graph from TensorFlow models
 using Keras layer call hooks.
 
+v0.2.0 Features:
+- Performance profiling with execution time per layer
+
 IMPORTANT: All hooks are wrapped in try-catch to NEVER crash training.
 """
 
@@ -36,20 +39,27 @@ class TensorFlowTracer(BaseTracer):
     Uses Keras layer call hooks to capture the execution graph.
     Supports Sequential, Functional, and Subclassed Keras models.
 
+    v0.2.0: Added enable_profiling for execution time tracking.
+
     Example:
-        >>> tracer = TensorFlowTracer()
+        >>> tracer = TensorFlowTracer(enable_profiling=True)
         >>> tracer.attach(model)
         >>> output = model(input)
         >>> graph = tracer.get_graph()
         >>> tracer.detach()
     """
 
-    def __init__(self, suppress_errors: bool = True) -> None:
+    def __init__(
+        self,
+        suppress_errors: bool = True,
+        enable_profiling: bool = True,
+    ) -> None:
         """
         Initialize the TensorFlow tracer.
         
         Args:
             suppress_errors: If True, hook errors are logged but don't crash training.
+            enable_profiling: Track execution time per layer (default: True)
         """
         super().__init__()
         self._graph = ExecutionGraph()
@@ -59,6 +69,9 @@ class TensorFlowTracer(BaseTracer):
         self._suppress_errors = suppress_errors
         self._error_count = 0
         self._tensor_sources: dict[int, str] = {}
+        
+        # v0.2.0 profiling
+        self._enable_profiling = enable_profiling
 
     def attach(self, model: Any) -> None:
         """
@@ -138,7 +151,13 @@ class TensorFlowTracer(BaseTracer):
     def on_forward_end(
         self, module: Any, inputs: Any, outputs: Any, name: str
     ) -> None:
-        """Record end of layer execution."""
+        """Record end of layer execution (called with default timing)."""
+        self._on_forward_end_with_time(module, inputs, outputs, name, 0.0)
+
+    def _on_forward_end_with_time(
+        self, module: Any, inputs: Any, outputs: Any, name: str, execution_time_ms: float
+    ) -> None:
+        """Record end of layer execution with timing data."""
         import tensorflow as tf
 
         # Skip if we've hit node limit
@@ -172,6 +191,7 @@ class TensorFlowTracer(BaseTracer):
             input_tensors=input_tensors,
             output_tensors=output_tensors,
             execution_order=self._execution_order,
+            execution_time_ms=execution_time_ms,
             has_error=has_error,
             error_message=error_message,
             extra_info=self._get_layer_info(module),
@@ -214,8 +234,18 @@ class TensorFlowTracer(BaseTracer):
 
             def wrapped_call(inputs, *args, **kwargs):
                 try:
+                    # Capture execution time if profiling enabled
+                    start_time = time.perf_counter() if tracer._enable_profiling else 0
+                    
                     outputs = original_call(inputs, *args, **kwargs)
-                    tracer.on_forward_end(layer, inputs, outputs, layer.name)
+                    
+                    execution_time_ms = 0.0
+                    if tracer._enable_profiling:
+                        execution_time_ms = (time.perf_counter() - start_time) * 1000
+                    
+                    tracer._on_forward_end_with_time(
+                        layer, inputs, outputs, layer.name, execution_time_ms
+                    )
                     return outputs
                 except Exception as e:
                     tracer._handle_hook_error("call", layer.name, e)

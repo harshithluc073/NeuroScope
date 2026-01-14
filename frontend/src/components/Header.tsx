@@ -1,8 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useGraphStore } from '../store/graphStore';
+import { useGraphStore, type ViewMode } from '../store/graphStore';
 
 export function Header() {
-    const { nodes, graphData, clearGraph, setSearchQuery, searchQuery } = useGraphStore();
+    const { nodes, graphData, clearGraph, setSearchQuery, searchQuery, viewMode, setViewMode } = useGraphStore();
     const [isExporting, setIsExporting] = useState(false);
 
     const modelName = (graphData?.metadata?.model_class as string) || 'No Model';
@@ -75,11 +75,23 @@ export function Header() {
             if (e.key === 'Escape') {
                 setSearchQuery('');
             }
+            // 1, 2, 3: View mode shortcuts (when not in input)
+            if (document.activeElement?.tagName !== 'INPUT') {
+                if (e.key === '1') setViewMode('normal');
+                if (e.key === '2') setViewMode('profiling');
+                if (e.key === '3') setViewMode('gradients');
+            }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [exportPng, setSearchQuery]);
+    }, [exportPng, setSearchQuery, setViewMode]);
+
+    const viewModes: { key: ViewMode; label: string; icon: string }[] = [
+        { key: 'normal', label: 'Normal', icon: '🔍' },
+        { key: 'profiling', label: 'Profiling', icon: '⏱️' },
+        { key: 'gradients', label: 'Gradients', icon: '∇' },
+    ];
 
     return (
         <header className="header">
@@ -106,6 +118,21 @@ export function Header() {
                         ×
                     </button>
                 )}
+            </div>
+
+            {/* v0.2.0: View Mode Toggle */}
+            <div className="header__view-modes">
+                {viewModes.map((mode, index) => (
+                    <button
+                        key={mode.key}
+                        className={`header__view-mode ${viewMode === mode.key ? 'header__view-mode--active' : ''}`}
+                        onClick={() => setViewMode(mode.key)}
+                        title={`${mode.label} view (${index + 1})`}
+                    >
+                        <span className="header__view-mode-icon">{mode.icon}</span>
+                        <span className="header__view-mode-label">{mode.label}</span>
+                    </button>
+                ))}
             </div>
 
             <div className="header__info">

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-01-14
+
+### Added
+- **Performance Profiling**: Execution time tracking per layer
+  - `enable_profiling=True` option in tracer
+  - Heatmap visualization in frontend (Profiling view mode)
+  - Execution time displayed on nodes
+
+- **Backward Pass Visualization**: Gradient flow tracking
+  - `capture_gradients=True` option for gradient capture during backward pass
+  - Gradient tensor metadata stored per node
+  - Vanishing/exploding gradient detection (NaN, Inf, < 1e-7)
+  - Gradients view mode in frontend
+
+- **Memory Tracking**: CUDA memory delta per operation
+  - `track_memory=True` option for tracking memory allocation
+  - Memory delta displayed in Node Inspector
+
+- **Tensor Statistics**: Output tensor value summaries
+  - `capture_tensor_stats=True` option
+  - Min/max/mean/std values captured
+  - NaN/Inf/zeros counts displayed
+
+- **Frontend Enhancements**:
+  - View Mode toggle (Normal/Profiling/Gradients) with keyboard shortcuts (1/2/3)
+  - Profiling section in Node Inspector
+  - Tensor Statistics section in Node Inspector
+  - Gradient Tensors section in Node Inspector
+  - Heatmap coloring for execution time
+  - Memory delta coloring (positive=red, negative=green)
+
+- **New Examples**:
+  - `profiling_example.py` - Performance profiling demo
+  - `gradient_debugging.py` - Gradient debugging demo
+
 ## [0.1.0] - 2026-01-13
 
 ### Added

@@ -11,6 +11,17 @@ export interface TensorMetadata {
     is_contiguous: boolean;
 }
 
+// v0.2.0: Tensor statistics
+export interface TensorStats {
+    min_val: number;
+    max_val: number;
+    mean_val: number;
+    std_val: number;
+    num_zeros: number;
+    num_nan: number;
+    num_inf: number;
+}
+
 export interface GraphNodeData {
     id: string;
     label: string;
@@ -21,10 +32,16 @@ export interface GraphNodeData {
     children_ids: string[];
     input_tensors: TensorMetadata[];
     output_tensors: TensorMetadata[];
+    gradient_tensors: TensorMetadata[];  // v0.2.0
     execution_order: number;
+    execution_time_ms: number;  // v0.2.0
+    memory_delta_bytes: number;  // v0.2.0
     has_error: boolean;
     error_message: string | null;
+    tensor_stats: TensorStats | null;  // v0.2.0
     extra_info: Record<string, unknown>;
+    // Index signature for React Flow Node compatibility
+    [key: string]: unknown;
 }
 
 export interface ExecutionGraph {
@@ -42,6 +59,9 @@ export interface ExecutionGraph {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+// v0.2.0: View modes for different visualization types
+export type ViewMode = 'normal' | 'profiling' | 'gradients';
+
 interface GraphStore {
     // Graph data (React Flow format)
     nodes: Node<GraphNodeData>[];
@@ -55,15 +75,18 @@ interface GraphStore {
     collapsedGroups: Set<string>;
     connectionStatus: ConnectionStatus;
     searchQuery: string;
+    viewMode: ViewMode;  // v0.2.0
 
     // Actions
     setGraph: (graph: ExecutionGraph) => void;
     addNode: (node: GraphNodeData) => void;
     addNodes: (nodes: GraphNodeData[]) => void;  // Batch add for performance
+    updateNodeGradients: (nodeId: string, gradients: TensorMetadata[]) => void;  // v0.2.0
     selectNode: (nodeId: string | null) => void;
     toggleCollapse: (groupId: string) => void;
     setConnectionStatus: (status: ConnectionStatus) => void;
     setSearchQuery: (query: string) => void;
+    setViewMode: (mode: ViewMode) => void;  // v0.2.0
     clearGraph: () => void;
 }
 
@@ -95,6 +118,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     collapsedGroups: new Set(),
     connectionStatus: 'disconnected',
     searchQuery: '',
+    viewMode: 'normal',  // v0.2.0
 
     setGraph: (graph) => {
         const { nodes, edges } = convertToReactFlow(graph);
@@ -166,5 +190,27 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
     setSearchQuery: (query) => set({ searchQuery: query }),
 
-    clearGraph: () => set({ nodes: [], edges: [], graphData: null, selectedNodeId: null }),
+    // v0.2.0: Set view mode (normal, profiling, gradients)
+    setViewMode: (mode) => set({ viewMode: mode }),
+
+    // v0.2.0: Update node gradients from backward pass
+    updateNodeGradients: (nodeId, gradients) => {
+        set((state) => {
+            const nodeIndex = state.nodes.findIndex((n) => n.id === nodeId);
+            if (nodeIndex < 0) return state;
+
+            const newNodes = [...state.nodes];
+            const node = newNodes[nodeIndex];
+            newNodes[nodeIndex] = {
+                ...node,
+                data: {
+                    ...node.data,
+                    gradient_tensors: gradients,
+                },
+            };
+            return { nodes: newNodes };
+        });
+    },
+
+    clearGraph: () => set({ nodes: [], edges: [], graphData: null, selectedNodeId: null, viewMode: 'normal' }),
 }));
